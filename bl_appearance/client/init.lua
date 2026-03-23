@@ -262,14 +262,6 @@ local function setCamPosition(mouseX, mouseY)
     PointCamAtCoord(cam, targetCoords.x, targetCoords.y, targetCoords.z)
 end
 
-local function useHiDof(currentCam)
-    if not (DoesCamExist(cam) and currentCam == cam) then return end
-    SetUseHiDof()
-    SetTimeout(0, function()
-        useHiDof(currentCam)
-    end)
-end
-
 local function moveCamera(coords, distance)
     local heading = GetEntityHeading(ped) + 94.0
     distance = distance or 1.0
@@ -288,11 +280,6 @@ local function moveCamera(coords, distance)
         Wait(250)
         DestroyCam(oldCam, true)
     end
-    SetCamUseShallowDofMode(newCam, true)
-    SetCamNearDof(newCam, 0.4)
-    SetCamFarDof(newCam, 1.2)
-    SetCamDofStrength(newCam, 0.3)
-    useHiDof(newCam)
 end
 
 local function setCamera(section, distance)

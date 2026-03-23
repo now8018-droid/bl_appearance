@@ -1,5 +1,5 @@
 Config = {
-    locale = 'en',
+    locale = 'th',
     openControl = 'E',
     previousClothing = 'esx', -- 'illenium' | 'qb' | 'esx' | 'fivem-appearance'
     textUi = true, -- if true, uses textUI | if false, uses sprite
