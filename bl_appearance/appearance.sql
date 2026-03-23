@@ -1,10 +1,5 @@
-CREATE TABLE IF NOT EXISTS `appearance` (
-    `id` varchar(100) NOT NULL,
-    `skin` longtext DEFAULT NULL,
-    `clothes` longtext DEFAULT NULL,
-    `tattoos`  longtext DEFAULT NULL,
-    PRIMARY KEY (`id`)
-) ENGINE=InnoDB DEFAULT CHARSET=utf8;
+-- Appearance data is now stored in `users.skin` for ESX compatibility.
+-- Keep this file for the outfits table used by bl_appearance.
 
 CREATE TABLE IF NOT EXISTS `outfits` (
   `id` int(11) NOT NULL AUTO_INCREMENT,

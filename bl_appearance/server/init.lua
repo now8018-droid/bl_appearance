@@ -164,41 +164,58 @@ local mergeAppearance
 local getAppearance
 local saveAppearance
 
+local function decodeJsonTable(value)
+    if not value or value == '' then
+        return nil
+    end
+
+    local ok, decoded = pcall(json.decode, value)
+    if not ok or type(decoded) ~= 'table' then
+        return nil
+    end
+
+    return decoded
+end
+
+local function sanitizeAppearance(appearance)
+    if type(appearance) ~= 'table' then
+        return nil
+    end
+
+    local sanitized = {}
+    for key, value in pairs(appearance) do
+        if key ~= 'id' then
+            sanitized[key] = value
+        end
+    end
+
+    sanitized.tattoos = sanitized.tattoos or {}
+    return sanitized
+end
+
 local function getUserSkin(frameworkId)
     local response = dbScalar('SELECT skin FROM users WHERE identifier = ? LIMIT 1', { frameworkId })
-    return response and json.decode(response) or nil
+    return decodeJsonTable(response)
 end
 
 local function syncESXUserSkin(frameworkId, appearance, src)
-    if not frameworkId or not appearance then return end
+    local sanitized = sanitizeAppearance(appearance)
+    if not frameworkId or not sanitized then return 0 end
 
-    dbUpdate('UPDATE users SET skin = ? WHERE identifier = ?', {
-        json.encode(appearance), frameworkId
+    local updated = dbUpdate('UPDATE users SET skin = ? WHERE identifier = ?', {
+        json.encode(sanitized), frameworkId
     })
 
     local xPlayer = src and ESX.GetPlayerFromId(tonumber(src)) or ESX.GetPlayerFromIdentifier(frameworkId)
     if xPlayer then
-        xPlayer.skin = appearance
+        xPlayer.skin = sanitized
     end
+
+    return updated
 end
 
 local function getPersistedAppearance(src, frameworkId)
-    local appearance = getAppearance(src, frameworkId)
-    if appearance then
-        return appearance
-    end
-
-    frameworkId = frameworkId or getFrameworkID(src)
-    if not frameworkId then return nil end
-
-    local userSkin = getUserSkin(frameworkId)
-    if type(userSkin) == 'table' then
-        userSkin.id = frameworkId
-        userSkin.tattoos = userSkin.tattoos or {}
-        return userSkin
-    end
-
-    return nil
+    return getAppearance(src, frameworkId)
 end
 
 local function saveSkin(src, frameworkId, skin)
@@ -232,29 +249,12 @@ saveAppearance = function(src, frameworkId, appearance, force)
     end
 
     frameworkId = frameworkId or getFrameworkID(src)
-    local clothes = {
-        drawables = appearance.drawables,
-        props = appearance.props,
-        headOverlay = appearance.headOverlay,
-    }
-    local skin = {
-        headBlend = appearance.headBlend,
-        headStructure = appearance.headStructure,
-        hairColor = appearance.hairColor,
-        model = appearance.model,
-    }
-    local tattoos = appearance.tattoos or {}
+    if not frameworkId then return 0 end
 
-    local saved = dbPrepare(
-        'INSERT INTO appearance (id, clothes, skin, tattoos) VALUES (?, ?, ?, ?) ON DUPLICATE KEY UPDATE clothes = VALUES(clothes), skin = VALUES(skin), tattoos = VALUES(tattoos);',
-        { frameworkId, json.encode(clothes), json.encode(skin), json.encode(tattoos) }
-    )
+    local sanitized = sanitizeAppearance(appearance)
+    if not sanitized then return 0 end
 
-    if saved then
-        syncESXUserSkin(frameworkId, mergeAppearance(skin, clothes, tattoos, frameworkId), src)
-    end
-
-    return saved
+    return syncESXUserSkin(frameworkId, sanitized, src)
 end
 
 onClientCallback('bl_appearance:server:saveSkin', saveSkin)
@@ -402,9 +402,15 @@ core.RegisterUsableItem(outfitItem, function(source2, slot, metadata)
 end)
 
 local function getSkin(src, frameworkId)
-    frameworkId = frameworkId or getFrameworkID(src)
-    local response = dbScalar('SELECT skin FROM appearance WHERE id = ?', { frameworkId })
-    return response and json.decode(response) or nil
+    local appearance = getAppearance(src, frameworkId)
+    if not appearance then return nil end
+
+    return {
+        headBlend = appearance.headBlend,
+        headStructure = appearance.headStructure,
+        hairColor = appearance.hairColor,
+        model = appearance.model,
+    }
 end
 
 onClientCallback('bl_appearance:server:getSkin', getSkin)
@@ -413,9 +419,14 @@ exports('GetPlayerSkin', function(id)
 end)
 
 local function getClothes(src, frameworkId)
-    frameworkId = frameworkId or getFrameworkID(src)
-    local response = dbScalar('SELECT clothes FROM appearance WHERE id = ?', { frameworkId })
-    return response and json.decode(response) or nil
+    local appearance = getAppearance(src, frameworkId)
+    if not appearance then return nil end
+
+    return {
+        drawables = appearance.drawables,
+        props = appearance.props,
+        headOverlay = appearance.headOverlay,
+    }
 end
 
 onClientCallback('bl_appearance:server:getClothes', getClothes)
@@ -424,9 +435,8 @@ exports('GetPlayerClothes', function(id)
 end)
 
 local function getTattoos(src, frameworkId)
-    frameworkId = frameworkId or getFrameworkID(src)
-    local response = dbScalar('SELECT tattoos FROM appearance WHERE id = ?', { frameworkId })
-    return response and json.decode(response) or {}
+    local appearance = getAppearance(src, frameworkId)
+    return appearance and appearance.tattoos or {}
 end
 
 onClientCallback('bl_appearance:server:getTattoos', getTattoos)
@@ -457,17 +467,14 @@ getAppearance = function(src, frameworkId)
     end
 
     frameworkId = frameworkId or getFrameworkID(src)
-    local response = dbSingle('SELECT * FROM appearance WHERE id = ? LIMIT 1', { frameworkId })
-    if not response then
+    local appearance = getUserSkin(frameworkId)
+    if type(appearance) ~= 'table' then
         return nil
     end
 
-    return mergeAppearance(
-        response.skin and json.decode(response.skin) or {},
-        response.clothes and json.decode(response.clothes) or {},
-        response.tattoos and json.decode(response.tattoos) or {},
-        response.id
-    )
+    appearance.id = frameworkId
+    appearance.tattoos = appearance.tattoos or {}
+    return appearance
 end
 
 onClientCallback('bl_appearance:server:getAppearance', getAppearance)
@@ -539,14 +546,46 @@ local migrations = {
     qb = migrateQb,
 }
 
-dbReady(function()
-    local ok, err = pcall(function()
-        dbQuery('SELECT 1 FROM appearance LIMIT 1')
+local function migrateLegacyAppearanceTable()
+    local ok, rows = pcall(function()
+        return dbQuery('SELECT id, skin, clothes, tattoos FROM appearance')
     end)
 
     if not ok then
-        print(('Error checking appearance table. Most likely the table does not exist: %s'):format(err))
+        print(('bl_appearance: legacy appearance table is unavailable, skipping migration (%s)'):format(rows))
+        return
     end
+
+    if not rows or #rows == 0 then
+        return
+    end
+
+    local migrated = 0
+    for i = 1, #rows do
+        local row = rows[i]
+        local appearance = mergeAppearance(
+            decodeJsonTable(row.skin) or {},
+            decodeJsonTable(row.clothes) or {},
+            decodeJsonTable(row.tattoos) or {},
+            row.id
+        )
+
+        if next(appearance) then
+            appearance.id = nil
+            local updated = syncESXUserSkin(row.id, appearance) or 0
+            if updated > 0 then
+                migrated = migrated + 1
+            end
+        end
+    end
+
+    if migrated > 0 then
+        print(('bl_appearance: migrated %s legacy appearance rows into users.skin'):format(migrated))
+    end
+end
+
+dbReady(function()
+    migrateLegacyAppearanceTable()
 end)
 
 RegisterNetEvent('bl_appearance:server:setroutingbucket', function()
