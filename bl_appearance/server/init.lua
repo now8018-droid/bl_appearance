@@ -164,6 +164,22 @@ local mergeAppearance
 local getAppearance
 local saveAppearance
 
+local appearanceCache = {}
+local pendingAppearanceSaves = {}
+local appearanceSaveDebounceMs = math.max(tonumber(GetConvar('bl:appearanceSaveDebounceMs', '750')) or 750, 0)
+local appearanceMigrationFlag = 'bl_appearance:legacy_appearance_migrated_v1'
+
+local function cloneTable(value)
+    if type(value) ~= 'table' then return value end
+
+    local copy = {}
+    for key, entry in pairs(value) do
+        copy[key] = cloneTable(entry)
+    end
+
+    return copy
+end
+
 local function decodeJsonTable(value)
     if not value or value == '' then
         return nil
@@ -177,41 +193,155 @@ local function decodeJsonTable(value)
     return decoded
 end
 
+local function compactTattoos(tattoos)
+    if type(tattoos) ~= 'table' then
+        return {}
+    end
+
+    local compact = {}
+    for i = 1, #tattoos do
+        local entry = tattoos[i]
+        if type(entry) == 'table' then
+            local tattoo = entry.tattoo
+            if type(tattoo) == 'table' then
+                compact[#compact + 1] = {
+                    id = entry.id,
+                    zoneIndex = entry.zoneIndex,
+                    dlcIndex = entry.dlcIndex,
+                    opacity = entry.opacity,
+                    tattoo = {
+                        label = tattoo.label,
+                        hash = tattoo.hash,
+                        zone = tattoo.zone,
+                        dlc = tattoo.dlc,
+                        opacity = tattoo.opacity,
+                    }
+                }
+            end
+        end
+    end
+
+    return compact
+end
+
 local function sanitizeAppearance(appearance)
     if type(appearance) ~= 'table' then
         return nil
     end
 
-    local sanitized = {}
-    for key, value in pairs(appearance) do
-        if key ~= 'id' then
-            sanitized[key] = value
-        end
+    return {
+        model = appearance.model,
+        hairColor = cloneTable(appearance.hairColor),
+        headBlend = cloneTable(appearance.headBlend),
+        headStructure = cloneTable(appearance.headStructure),
+        headOverlay = cloneTable(appearance.headOverlay),
+        drawables = cloneTable(appearance.drawables),
+        props = cloneTable(appearance.props),
+        tattoos = compactTattoos(appearance.tattoos),
+    }
+end
+
+local function setAppearanceCache(frameworkId, appearance)
+    if not frameworkId then return nil end
+
+    local sanitized = sanitizeAppearance(appearance)
+    if sanitized then
+        appearanceCache[frameworkId] = sanitized
+    else
+        appearanceCache[frameworkId] = nil
     end
 
-    sanitized.tattoos = sanitized.tattoos or {}
     return sanitized
 end
 
-local function getUserSkin(frameworkId)
-    local response = dbScalar('SELECT skin FROM users WHERE identifier = ? LIMIT 1', { frameworkId })
-    return decodeJsonTable(response)
+local function getCachedAppearance(frameworkId)
+    local cached = frameworkId and appearanceCache[frameworkId]
+    return cached and cloneTable(cached) or nil
 end
 
-local function syncESXUserSkin(frameworkId, appearance, src)
-    local sanitized = sanitizeAppearance(appearance)
-    if not frameworkId or not sanitized then return 0 end
+local function getUserSkin(frameworkId)
+    local cached = getCachedAppearance(frameworkId)
+    if cached then
+        return cached
+    end
+
+    local response = dbScalar('SELECT skin FROM users WHERE identifier = ? LIMIT 1', { frameworkId })
+    local appearance = decodeJsonTable(response)
+    if appearance then
+        setAppearanceCache(frameworkId, appearance)
+        return getCachedAppearance(frameworkId)
+    end
+
+    return nil
+end
+
+local function flushAppearanceSave(frameworkId)
+    local pending = frameworkId and pendingAppearanceSaves[frameworkId]
+    if not pending or not frameworkId then return 0 end
 
     local updated = dbUpdate('UPDATE users SET skin = ? WHERE identifier = ?', {
-        json.encode(sanitized), frameworkId
-    })
+        json.encode(pending.appearance), frameworkId
+    }) or 0
 
-    local xPlayer = src and ESX.GetPlayerFromId(tonumber(src)) or ESX.GetPlayerFromIdentifier(frameworkId)
-    if xPlayer then
-        xPlayer.skin = sanitized
+    if pendingAppearanceSaves[frameworkId] == pending then
+        pendingAppearanceSaves[frameworkId] = nil
     end
 
     return updated
+end
+
+local function queueAppearanceSave(frameworkId, appearance, src)
+    if not frameworkId or not appearance then return 0 end
+
+    local pending = pendingAppearanceSaves[frameworkId]
+    if pending then
+        pending.appearance = cloneTable(appearance)
+        pending.src = src or pending.src
+        pending.updatedAt = GetGameTimer()
+        return 1
+    end
+
+    pending = {
+        appearance = cloneTable(appearance),
+        src = src,
+        updatedAt = GetGameTimer(),
+    }
+    pendingAppearanceSaves[frameworkId] = pending
+
+    CreateThread(function()
+        local lastUpdatedAt = pending.updatedAt
+        while pendingAppearanceSaves[frameworkId] == pending do
+            Wait(appearanceSaveDebounceMs)
+            if pendingAppearanceSaves[frameworkId] ~= pending then
+                return
+            end
+            if pending.updatedAt == lastUpdatedAt then
+                break
+            end
+            lastUpdatedAt = pending.updatedAt
+        end
+
+        flushAppearanceSave(frameworkId)
+    end)
+
+    return 1
+end
+
+local function syncESXUserSkin(frameworkId, appearance, src)
+    local sanitized = setAppearanceCache(frameworkId, appearance)
+    if not frameworkId or not sanitized then return 0 end
+
+    local xPlayer = src and ESX.GetPlayerFromId(tonumber(src)) or ESX.GetPlayerFromIdentifier(frameworkId)
+    if xPlayer then
+        xPlayer.skin = cloneTable(sanitized)
+    end
+
+    if appearanceSaveDebounceMs == 0 then
+        pendingAppearanceSaves[frameworkId] = { appearance = cloneTable(sanitized), src = src, updatedAt = GetGameTimer() }
+        return flushAppearanceSave(frameworkId)
+    end
+
+    return queueAppearanceSave(frameworkId, sanitized, src)
 end
 
 local function getPersistedAppearance(src, frameworkId)
@@ -546,7 +676,19 @@ local migrations = {
     qb = migrateQb,
 }
 
+local function hasCompletedAppearanceMigration()
+    return GetResourceKvpString(appearanceMigrationFlag) == 'done'
+end
+
+local function markAppearanceMigrationComplete()
+    SetResourceKvp(appearanceMigrationFlag, 'done')
+end
+
 local function migrateLegacyAppearanceTable()
+    if hasCompletedAppearanceMigration() then
+        return
+    end
+
     local ok, rows = pcall(function()
         return dbQuery('SELECT id, skin, clothes, tattoos FROM appearance')
     end)
@@ -557,6 +699,7 @@ local function migrateLegacyAppearanceTable()
     end
 
     if not rows or #rows == 0 then
+        markAppearanceMigrationComplete()
         return
     end
 
@@ -572,12 +715,20 @@ local function migrateLegacyAppearanceTable()
 
         if next(appearance) then
             appearance.id = nil
-            local updated = syncESXUserSkin(row.id, appearance) or 0
-            if updated > 0 then
-                migrated = migrated + 1
+            local sanitized = sanitizeAppearance(appearance)
+            if sanitized then
+                setAppearanceCache(row.id, sanitized)
+                local updated = dbUpdate('UPDATE users SET skin = ? WHERE identifier = ?', {
+                    json.encode(sanitized), row.id
+                }) or 0
+                if updated > 0 then
+                    migrated = migrated + 1
+                end
             end
         end
     end
+
+    markAppearanceMigrationComplete()
 
     if migrated > 0 then
         print(('bl_appearance: migrated %s legacy appearance rows into users.skin'):format(migrated))
@@ -586,6 +737,22 @@ end
 
 dbReady(function()
     migrateLegacyAppearanceTable()
+end)
+
+AddEventHandler('playerDropped', function()
+    local frameworkId = getFrameworkID(source)
+    if frameworkId then
+        flushAppearanceSave(frameworkId)
+        appearanceCache[frameworkId] = nil
+    end
+end)
+
+AddEventHandler('onResourceStop', function(resource)
+    if resource ~= GetCurrentResourceName() then return end
+
+    for frameworkId in pairs(pendingAppearanceSaves) do
+        flushAppearanceSave(frameworkId)
+    end
 end)
 
 RegisterNetEvent('bl_appearance:server:setroutingbucket', function()
