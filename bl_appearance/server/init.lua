@@ -3,6 +3,66 @@ local activeEvents = {}
 local ESX = exports.es_extended:getSharedObject()
 local config = exports.bl_appearance:config()
 
+local oxmysql = exports.oxmysql
+
+local function awaitOxmysql(method, query, params)
+    local asyncMethod = oxmysql[('%s_async'):format(method)]
+    if asyncMethod then
+        return asyncMethod(oxmysql, query, params or {})
+    end
+
+    local callbackMethod = oxmysql[method]
+    if not callbackMethod then
+        error(('oxmysql export %s is unavailable'):format(method))
+    end
+
+    local p = promise.new()
+    callbackMethod(oxmysql, query, params or {}, function(result)
+        p:resolve(result)
+    end)
+
+    return Citizen.Await(p)
+end
+
+local function dbUpdate(query, params)
+    return awaitOxmysql('update', query, params)
+end
+
+local function dbInsert(query, params)
+    return awaitOxmysql('insert', query, params)
+end
+
+local function dbQuery(query, params)
+    return awaitOxmysql('query', query, params)
+end
+
+local function dbSingle(query, params)
+    return awaitOxmysql('single', query, params)
+end
+
+local function dbScalar(query, params)
+    return awaitOxmysql('scalar', query, params)
+end
+
+local function dbPrepare(query, params)
+    return awaitOxmysql('prepare', query, params)
+end
+
+local function dbReady(cb)
+    local ready = oxmysql.ready
+    if ready then
+        return ready(oxmysql, cb)
+    end
+
+    CreateThread(function()
+        while GetResourceState('oxmysql') ~= 'started' do
+            Wait(50)
+        end
+
+        cb()
+    end)
+end
+
 RegisterNetEvent(('_bl_cb_%s'):format(resourceName), function(key, ...)
     local resolver = activeEvents[key]
     if resolver then
@@ -107,21 +167,21 @@ end
 
 local function saveSkin(src, frameworkId, skin)
     frameworkId = frameworkId or getFrameworkID(src)
-    return MySQL.update.await('UPDATE appearance SET skin = ? WHERE id = ?', {
+    return dbUpdate('UPDATE appearance SET skin = ? WHERE id = ?', {
         json.encode(skin), frameworkId
     })
 end
 
 local function saveClothes(src, frameworkId, clothes)
     frameworkId = frameworkId or getFrameworkID(src)
-    return MySQL.update.await('UPDATE appearance SET clothes = ? WHERE id = ?', {
+    return dbUpdate('UPDATE appearance SET clothes = ? WHERE id = ?', {
         json.encode(clothes), frameworkId
     })
 end
 
 local function saveTattoos(src, frameworkId, tattoos)
     frameworkId = frameworkId or getFrameworkID(src)
-    return MySQL.update.await('UPDATE appearance SET tattoos = ? WHERE id = ?', {
+    return dbUpdate('UPDATE appearance SET tattoos = ? WHERE id = ?', {
         json.encode(tattoos), frameworkId
     })
 end
@@ -145,7 +205,7 @@ local function saveAppearance(src, frameworkId, appearance, force)
     }
     local tattoos = appearance.tattoos or {}
 
-    return MySQL.prepare.await(
+    return dbPrepare(
         'INSERT INTO appearance (id, clothes, skin, tattoos) VALUES (?, ?, ?, ?) ON DUPLICATE KEY UPDATE clothes = VALUES(clothes), skin = VALUES(skin), tattoos = VALUES(tattoos);',
         { frameworkId, json.encode(clothes), json.encode(skin), json.encode(tattoos) }
     )
@@ -176,7 +236,7 @@ local function getOutfits(src, frameworkId)
     local player = core.GetPlayer(src)
     local job = player and player.job or { name = 'unknown', grade = { level = 0, name = 'unknown' } }
 
-    local ok, response = pcall(MySQL.query.await, 'SELECT * FROM outfits WHERE player_id = ? OR (jobname = ? AND jobrank <= ?)', {
+    local ok, response = pcall(dbQuery, 'SELECT * FROM outfits WHERE player_id = ? OR (jobname = ? AND jobrank <= ?)', {
         frameworkId, job.name, job.grade.level
     })
 
@@ -207,7 +267,7 @@ onClientCallback('bl_appearance:server:getOutfits', getOutfits)
 exports('GetOutfits', getOutfits)
 
 local function renameOutfit(src, data)
-    return MySQL.update.await('UPDATE outfits SET label = ? WHERE player_id = ? AND id = ?', {
+    return dbUpdate('UPDATE outfits SET label = ? WHERE player_id = ? AND id = ?', {
         data.label, getFrameworkID(src), data.id
     })
 end
@@ -216,7 +276,7 @@ onClientCallback('bl_appearance:server:renameOutfit', renameOutfit)
 exports('RenameOutfit', renameOutfit)
 
 local function deleteOutfit(src, id)
-    local result = MySQL.update.await('DELETE FROM outfits WHERE player_id = ? AND id = ?', {
+    local result = dbUpdate('DELETE FROM outfits WHERE player_id = ? AND id = ?', {
         getFrameworkID(src), id
     })
     return result > 0
@@ -233,7 +293,7 @@ local function saveOutfit(src, data)
         jobrank = data.job.rank or data.job.grade or 0
     end
 
-    return MySQL.insert.await('INSERT INTO outfits (player_id, label, outfit, jobname, jobrank) VALUES (?, ?, ?, ?, ?)', {
+    return dbInsert('INSERT INTO outfits (player_id, label, outfit, jobname, jobrank) VALUES (?, ?, ?, ?, ?)', {
         frameworkId, data.label, json.encode(data.outfit), jobname, jobrank
     })
 end
@@ -242,7 +302,7 @@ onClientCallback('bl_appearance:server:saveOutfit', saveOutfit)
 exports('SaveOutfit', saveOutfit)
 
 local function fetchOutfit(_, id)
-    local response = MySQL.scalar.await('SELECT outfit FROM outfits WHERE id = ?', { id })
+    local response = dbScalar('SELECT outfit FROM outfits WHERE id = ?', { id })
     return response and json.decode(response) or nil
 end
 
@@ -251,12 +311,12 @@ exports('FetchOutfit', fetchOutfit)
 
 local function importOutfit(src, frameworkId, outfitId, outfitName)
     frameworkId = frameworkId or getFrameworkID(src)
-    local result = MySQL.single.await('SELECT label, outfit FROM outfits WHERE id = ?', { outfitId })
+    local result = dbSingle('SELECT label, outfit FROM outfits WHERE id = ?', { outfitId })
     if not result then
         return { success = false, message = 'Outfit not found' }
     end
 
-    local newId = MySQL.insert.await('INSERT INTO outfits (player_id, label, outfit) VALUES (?, ?, ?)', {
+    local newId = dbInsert('INSERT INTO outfits (player_id, label, outfit) VALUES (?, ?, ?)', {
         frameworkId, outfitName, result.outfit
     })
 
@@ -297,7 +357,7 @@ end)
 
 local function getSkin(src, frameworkId)
     frameworkId = frameworkId or getFrameworkID(src)
-    local response = MySQL.scalar.await('SELECT skin FROM appearance WHERE id = ?', { frameworkId })
+    local response = dbScalar('SELECT skin FROM appearance WHERE id = ?', { frameworkId })
     return response and json.decode(response) or nil
 end
 
@@ -308,7 +368,7 @@ end)
 
 local function getClothes(src, frameworkId)
     frameworkId = frameworkId or getFrameworkID(src)
-    local response = MySQL.scalar.await('SELECT clothes FROM appearance WHERE id = ?', { frameworkId })
+    local response = dbScalar('SELECT clothes FROM appearance WHERE id = ?', { frameworkId })
     return response and json.decode(response) or nil
 end
 
@@ -319,7 +379,7 @@ end)
 
 local function getTattoos(src, frameworkId)
     frameworkId = frameworkId or getFrameworkID(src)
-    local response = MySQL.scalar.await('SELECT tattoos FROM appearance WHERE id = ?', { frameworkId })
+    local response = dbScalar('SELECT tattoos FROM appearance WHERE id = ?', { frameworkId })
     return response and json.decode(response) or {}
 end
 
@@ -351,7 +411,7 @@ local function getAppearance(src, frameworkId)
     end
 
     frameworkId = frameworkId or getFrameworkID(src)
-    local response = MySQL.single.await('SELECT * FROM appearance WHERE id = ? LIMIT 1', { frameworkId })
+    local response = dbSingle('SELECT * FROM appearance WHERE id = ? LIMIT 1', { frameworkId })
     if not response then
         return nil
     end
@@ -370,7 +430,7 @@ exports('GetPlayerAppearance', function(id)
 end)
 
 local function migrateFivem(src)
-    local response = MySQL.query.await('SELECT * FROM `players`')
+    local response = dbQuery('SELECT * FROM `players`')
     if not response then return end
 
     for i = 1, #response do
@@ -390,7 +450,7 @@ local function migrateFivem(src)
 end
 
 local function migrateIllenium(src)
-    local response = MySQL.query.await('SELECT * FROM `playerskins` WHERE active = 1')
+    local response = dbQuery('SELECT * FROM `playerskins` WHERE active = 1')
     if not response then return end
 
     for i = 1, #response do
@@ -410,7 +470,7 @@ local function migrateIllenium(src)
 end
 
 local function migrateQb(src)
-    local response = MySQL.query.await('SELECT * FROM `playerskins` WHERE active = 1')
+    local response = dbQuery('SELECT * FROM `playerskins` WHERE active = 1')
     if not response then return end
 
     for i = 1, #response do
@@ -433,9 +493,9 @@ local migrations = {
     qb = migrateQb,
 }
 
-MySQL.ready(function()
+dbReady(function()
     local ok, err = pcall(function()
-        MySQL.query.await('SELECT 1 FROM appearance LIMIT 1')
+        dbQuery('SELECT 1 FROM appearance LIMIT 1')
     end)
 
     if not ok then
