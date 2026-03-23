@@ -262,14 +262,6 @@ local function setCamPosition(mouseX, mouseY)
     PointCamAtCoord(cam, targetCoords.x, targetCoords.y, targetCoords.z)
 end
 
-local function useHiDof(currentCam)
-    if not (DoesCamExist(cam) and currentCam == cam) then return end
-    SetUseHiDof()
-    SetTimeout(0, function()
-        useHiDof(currentCam)
-    end)
-end
-
 local function moveCamera(coords, distance)
     local heading = GetEntityHeading(ped) + 94.0
     distance = distance or 1.0
@@ -288,11 +280,6 @@ local function moveCamera(coords, distance)
         Wait(250)
         DestroyCam(oldCam, true)
     end
-    SetCamUseShallowDofMode(newCam, true)
-    SetCamNearDof(newCam, 0.4)
-    SetCamFarDof(newCam, 1.2)
-    SetCamDofStrength(newCam, 0.3)
-    useHiDof(newCam)
 end
 
 local function setCamera(section, distance)
@@ -420,12 +407,29 @@ local function ensureAppearanceState()
     return currentAppearanceState
 end
 
+local sexModels = {
+    Male = 'mp_m_freemode_01',
+    Female = 'mp_f_freemode_01'
+}
+
+local function getSexModelOptions()
+    return { 'Male', 'Female' }
+end
+
+local function resolveSexModel(model)
+    if type(model) == 'string' and sexModels[model] then
+        return GetHashKey(sexModels[model])
+    end
+
+    return type(model) == 'number' and model or GetHashKey(model)
+end
+
 local function findModelIndex(target)
-    local models = exports.bl_appearance:models()
-    for i = 1, #models do
-        if GetHashKey(models[i]) == target then
-            return i - 1
-        end
+    if target == GetHashKey(sexModels.Male) then
+        return 0
+    end
+    if target == GetHashKey(sexModels.Female) then
+        return 1
     end
     return -1
 end
@@ -723,11 +727,18 @@ local function setHeadBlend(pedHandle, data)
 end
 exports('SetPedHeadBlend', setHeadBlend)
 
+local function restoreESXPlayerStateAfterModelChange(pedHandle)
+    if GetResourceState('es_extended') ~= 'started' or not ESX or not ESX.PlayerLoaded then return end
+
+    ESX.SetPlayerData('ped', pedHandle)
+    TriggerEvent('esx:onPlayerModelChanged')
+end
+
 local function setModel(pedHandle, data)
     if data == nil then return pedHandle end
     local model
     if type(data) == 'string' then
-        model = GetHashKey(data)
+        model = resolveSexModel(data)
     elseif type(data) == 'number' then
         model = data
     elseif type(data) == 'table' then
@@ -744,6 +755,7 @@ local function setModel(pedHandle, data)
         Wait(0)
         pedHandle = PlayerPedId()
         updatePed(pedHandle)
+        restoreESXPlayerStateAfterModelChange(pedHandle)
     end
 
     SetModelAsNoLongerNeeded(model)
@@ -928,7 +940,7 @@ RegisterNUICallback('appearance:save', function(appearance, cb)
 end)
 
 RegisterNUICallback('appearance:setModel', function(model, cb)
-    local hash = GetHashKey(model)
+    local hash = resolveSexModel(model)
     if not IsModelInCdimage(hash) or not IsModelValid(hash) then
         cb(0)
         return
@@ -1121,7 +1133,7 @@ local function openMenu(zone, creation)
     local allowExit = creation and false or menu.allowExit
     armour = GetPedArmour(pedHandle)
     local outfits = hasValue(tabs, 'outfits') and triggerServerCallback('bl_appearance:server:getOutfits', frameworkID) or nil
-    local models = hasValue(tabs, 'heritage') and getAllowlist(exports.bl_appearance:models()) or nil
+    local models = hasValue(tabs, 'heritage') and getSexModelOptions() or nil
     local tattoos = hasValue(tabs, 'tattoos') and getTattooData() or nil
     local blacklist = getBlacklist(zone)
 

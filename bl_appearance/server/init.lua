@@ -160,50 +160,231 @@ local function getFrameworkID(src)
     return player and player.id or nil
 end
 
+local mergeAppearance
+local getAppearance
+local saveAppearance
+
+local appearanceCache = {}
+local pendingAppearanceSaves = {}
+local appearanceSaveDebounceMs = math.max(tonumber(GetConvar('bl:appearanceSaveDebounceMs', '750')) or 750, 0)
+local appearanceMigrationFlag = 'bl_appearance:legacy_appearance_migrated_v1'
+
+local function cloneTable(value)
+    if type(value) ~= 'table' then return value end
+
+    local copy = {}
+    for key, entry in pairs(value) do
+        copy[key] = cloneTable(entry)
+    end
+
+    return copy
+end
+
+local function decodeJsonTable(value)
+    if not value or value == '' then
+        return nil
+    end
+
+    local ok, decoded = pcall(json.decode, value)
+    if not ok or type(decoded) ~= 'table' then
+        return nil
+    end
+
+    return decoded
+end
+
+local function compactTattoos(tattoos)
+    if type(tattoos) ~= 'table' then
+        return {}
+    end
+
+    local compact = {}
+    for i = 1, #tattoos do
+        local entry = tattoos[i]
+        if type(entry) == 'table' then
+            local tattoo = entry.tattoo
+            if type(tattoo) == 'table' then
+                compact[#compact + 1] = {
+                    id = entry.id,
+                    zoneIndex = entry.zoneIndex,
+                    dlcIndex = entry.dlcIndex,
+                    opacity = entry.opacity,
+                    tattoo = {
+                        label = tattoo.label,
+                        hash = tattoo.hash,
+                        zone = tattoo.zone,
+                        dlc = tattoo.dlc,
+                        opacity = tattoo.opacity,
+                    }
+                }
+            end
+        end
+    end
+
+    return compact
+end
+
+local function sanitizeAppearance(appearance)
+    if type(appearance) ~= 'table' then
+        return nil
+    end
+
+    return {
+        model = appearance.model,
+        hairColor = cloneTable(appearance.hairColor),
+        headBlend = cloneTable(appearance.headBlend),
+        headStructure = cloneTable(appearance.headStructure),
+        headOverlay = cloneTable(appearance.headOverlay),
+        drawables = cloneTable(appearance.drawables),
+        props = cloneTable(appearance.props),
+        tattoos = compactTattoos(appearance.tattoos),
+    }
+end
+
+local function setAppearanceCache(frameworkId, appearance)
+    if not frameworkId then return nil end
+
+    local sanitized = sanitizeAppearance(appearance)
+    if sanitized then
+        appearanceCache[frameworkId] = sanitized
+    else
+        appearanceCache[frameworkId] = nil
+    end
+
+    return sanitized
+end
+
+local function getCachedAppearance(frameworkId)
+    local cached = frameworkId and appearanceCache[frameworkId]
+    return cached and cloneTable(cached) or nil
+end
+
+local function getUserSkin(frameworkId)
+    local cached = getCachedAppearance(frameworkId)
+    if cached then
+        return cached
+    end
+
+    local response = dbScalar('SELECT skin FROM users WHERE identifier = ? LIMIT 1', { frameworkId })
+    local appearance = decodeJsonTable(response)
+    if appearance then
+        setAppearanceCache(frameworkId, appearance)
+        return getCachedAppearance(frameworkId)
+    end
+
+    return nil
+end
+
+local function flushAppearanceSave(frameworkId)
+    local pending = frameworkId and pendingAppearanceSaves[frameworkId]
+    if not pending or not frameworkId then return 0 end
+
+    local updated = dbUpdate('UPDATE users SET skin = ? WHERE identifier = ?', {
+        json.encode(pending.appearance), frameworkId
+    }) or 0
+
+    if pendingAppearanceSaves[frameworkId] == pending then
+        pendingAppearanceSaves[frameworkId] = nil
+    end
+
+    return updated
+end
+
+local function queueAppearanceSave(frameworkId, appearance, src)
+    if not frameworkId or not appearance then return 0 end
+
+    local pending = pendingAppearanceSaves[frameworkId]
+    if pending then
+        pending.appearance = cloneTable(appearance)
+        pending.src = src or pending.src
+        pending.updatedAt = GetGameTimer()
+        return 1
+    end
+
+    pending = {
+        appearance = cloneTable(appearance),
+        src = src,
+        updatedAt = GetGameTimer(),
+    }
+    pendingAppearanceSaves[frameworkId] = pending
+
+    CreateThread(function()
+        local lastUpdatedAt = pending.updatedAt
+        while pendingAppearanceSaves[frameworkId] == pending do
+            Wait(appearanceSaveDebounceMs)
+            if pendingAppearanceSaves[frameworkId] ~= pending then
+                return
+            end
+            if pending.updatedAt == lastUpdatedAt then
+                break
+            end
+            lastUpdatedAt = pending.updatedAt
+        end
+
+        flushAppearanceSave(frameworkId)
+    end)
+
+    return 1
+end
+
+local function syncESXUserSkin(frameworkId, appearance, src)
+    local sanitized = setAppearanceCache(frameworkId, appearance)
+    if not frameworkId or not sanitized then return 0 end
+
+    local xPlayer = src and ESX.GetPlayerFromId(tonumber(src)) or ESX.GetPlayerFromIdentifier(frameworkId)
+    if xPlayer then
+        xPlayer.skin = cloneTable(sanitized)
+    end
+
+    if appearanceSaveDebounceMs == 0 then
+        pendingAppearanceSaves[frameworkId] = { appearance = cloneTable(sanitized), src = src, updatedAt = GetGameTimer() }
+        return flushAppearanceSave(frameworkId)
+    end
+
+    return queueAppearanceSave(frameworkId, sanitized, src)
+end
+
+local function getPersistedAppearance(src, frameworkId)
+    return getAppearance(src, frameworkId)
+end
+
 local function saveSkin(src, frameworkId, skin)
     frameworkId = frameworkId or getFrameworkID(src)
-    return dbUpdate('UPDATE appearance SET skin = ? WHERE id = ?', {
-        json.encode(skin), frameworkId
-    })
+    local appearance = getPersistedAppearance(src, frameworkId) or {}
+    for key, value in pairs(skin or {}) do
+        appearance[key] = value
+    end
+    return saveAppearance(src, frameworkId, appearance, true)
 end
 
 local function saveClothes(src, frameworkId, clothes)
     frameworkId = frameworkId or getFrameworkID(src)
-    return dbUpdate('UPDATE appearance SET clothes = ? WHERE id = ?', {
-        json.encode(clothes), frameworkId
-    })
+    local appearance = getPersistedAppearance(src, frameworkId) or {}
+    for key, value in pairs(clothes or {}) do
+        appearance[key] = value
+    end
+    return saveAppearance(src, frameworkId, appearance, true)
 end
 
 local function saveTattoos(src, frameworkId, tattoos)
     frameworkId = frameworkId or getFrameworkID(src)
-    return dbUpdate('UPDATE appearance SET tattoos = ? WHERE id = ?', {
-        json.encode(tattoos), frameworkId
-    })
+    local appearance = getPersistedAppearance(src, frameworkId) or {}
+    appearance.tattoos = tattoos or {}
+    return saveAppearance(src, frameworkId, appearance, true)
 end
 
-local function saveAppearance(src, frameworkId, appearance, force)
+saveAppearance = function(src, frameworkId, appearance, force)
     if not force and src and frameworkId and getFrameworkID(src) ~= frameworkId then
         print(('You are trying to save an appearance for a different player %s %s'):format(src, frameworkId))
     end
 
     frameworkId = frameworkId or getFrameworkID(src)
-    local clothes = {
-        drawables = appearance.drawables,
-        props = appearance.props,
-        headOverlay = appearance.headOverlay,
-    }
-    local skin = {
-        headBlend = appearance.headBlend,
-        headStructure = appearance.headStructure,
-        hairColor = appearance.hairColor,
-        model = appearance.model,
-    }
-    local tattoos = appearance.tattoos or {}
+    if not frameworkId then return 0 end
 
-    return dbPrepare(
-        'INSERT INTO appearance (id, clothes, skin, tattoos) VALUES (?, ?, ?, ?) ON DUPLICATE KEY UPDATE clothes = VALUES(clothes), skin = VALUES(skin), tattoos = VALUES(tattoos);',
-        { frameworkId, json.encode(clothes), json.encode(skin), json.encode(tattoos) }
-    )
+    local sanitized = sanitizeAppearance(appearance)
+    if not sanitized then return 0 end
+
+    return syncESXUserSkin(frameworkId, sanitized, src)
 end
 
 onClientCallback('bl_appearance:server:saveSkin', saveSkin)
@@ -327,9 +508,6 @@ onClientCallback('bl_appearance:server:importOutfit', importOutfit)
 exports('ImportOutfit', importOutfit)
 
 local outfitItem = config.outfitItem
-if not outfitItem then
-    print('bl_appearance: No outfit item configured, please set it in config.lua')
-end
 
 onClientCallback('bl_appearance:server:itemOutfit', function(src, data)
     if not outfitItem then
@@ -351,9 +529,15 @@ core.RegisterUsableItem(outfitItem, function(source2, slot, metadata)
 end)
 
 local function getSkin(src, frameworkId)
-    frameworkId = frameworkId or getFrameworkID(src)
-    local response = dbScalar('SELECT skin FROM appearance WHERE id = ?', { frameworkId })
-    return response and json.decode(response) or nil
+    local appearance = getAppearance(src, frameworkId)
+    if not appearance then return nil end
+
+    return {
+        headBlend = appearance.headBlend,
+        headStructure = appearance.headStructure,
+        hairColor = appearance.hairColor,
+        model = appearance.model,
+    }
 end
 
 onClientCallback('bl_appearance:server:getSkin', getSkin)
@@ -362,9 +546,14 @@ exports('GetPlayerSkin', function(id)
 end)
 
 local function getClothes(src, frameworkId)
-    frameworkId = frameworkId or getFrameworkID(src)
-    local response = dbScalar('SELECT clothes FROM appearance WHERE id = ?', { frameworkId })
-    return response and json.decode(response) or nil
+    local appearance = getAppearance(src, frameworkId)
+    if not appearance then return nil end
+
+    return {
+        drawables = appearance.drawables,
+        props = appearance.props,
+        headOverlay = appearance.headOverlay,
+    }
 end
 
 onClientCallback('bl_appearance:server:getClothes', getClothes)
@@ -373,9 +562,8 @@ exports('GetPlayerClothes', function(id)
 end)
 
 local function getTattoos(src, frameworkId)
-    frameworkId = frameworkId or getFrameworkID(src)
-    local response = dbScalar('SELECT tattoos FROM appearance WHERE id = ?', { frameworkId })
-    return response and json.decode(response) or {}
+    local appearance = getAppearance(src, frameworkId)
+    return appearance and appearance.tattoos or {}
 end
 
 onClientCallback('bl_appearance:server:getTattoos', getTattoos)
@@ -383,7 +571,7 @@ exports('GetPlayerTattoos', function(id)
     return getTattoos(nil, id)
 end)
 
-local function mergeAppearance(skin, clothes, tattoos, id)
+mergeAppearance = function(skin, clothes, tattoos, id)
     local appearance = {}
     skin = skin or {}
     clothes = clothes or {}
@@ -400,23 +588,20 @@ local function mergeAppearance(skin, clothes, tattoos, id)
     return appearance
 end
 
-local function getAppearance(src, frameworkId)
+getAppearance = function(src, frameworkId)
     if not frameworkId and not src then
         return nil
     end
 
     frameworkId = frameworkId or getFrameworkID(src)
-    local response = dbSingle('SELECT * FROM appearance WHERE id = ? LIMIT 1', { frameworkId })
-    if not response then
+    local appearance = getUserSkin(frameworkId)
+    if type(appearance) ~= 'table' then
         return nil
     end
 
-    return mergeAppearance(
-        response.skin and json.decode(response.skin) or {},
-        response.clothes and json.decode(response.clothes) or {},
-        response.tattoos and json.decode(response.tattoos) or {},
-        response.id
-    )
+    appearance.id = frameworkId
+    appearance.tattoos = appearance.tattoos or {}
+    return appearance
 end
 
 onClientCallback('bl_appearance:server:getAppearance', getAppearance)
@@ -488,13 +673,86 @@ local migrations = {
     qb = migrateQb,
 }
 
-dbReady(function()
-    local ok, err = pcall(function()
-        dbQuery('SELECT 1 FROM appearance LIMIT 1')
-    end)
+local function hasCompletedAppearanceMigration()
+    return GetResourceKvpString(appearanceMigrationFlag) == 'done'
+end
 
-    if not ok then
-        print(('Error checking appearance table. Most likely the table does not exist: %s'):format(err))
+local function markAppearanceMigrationComplete()
+    SetResourceKvp(appearanceMigrationFlag, 'done')
+end
+
+local function migrateLegacyAppearanceTable()
+    if hasCompletedAppearanceMigration() then
+        return
+    end
+
+    local tableExists = dbScalar([[
+        SELECT 1
+        FROM information_schema.tables
+        WHERE table_schema = DATABASE() AND table_name = 'appearance'
+        LIMIT 1
+    ]])
+
+    if not tableExists then
+        markAppearanceMigrationComplete()
+        return
+    end
+
+    local rows = dbQuery('SELECT id, skin, clothes, tattoos FROM appearance')
+    if not rows or #rows == 0 then
+        markAppearanceMigrationComplete()
+        return
+    end
+
+    local migrated = 0
+    for i = 1, #rows do
+        local row = rows[i]
+        local appearance = mergeAppearance(
+            decodeJsonTable(row.skin) or {},
+            decodeJsonTable(row.clothes) or {},
+            decodeJsonTable(row.tattoos) or {},
+            row.id
+        )
+
+        if next(appearance) then
+            appearance.id = nil
+            local sanitized = sanitizeAppearance(appearance)
+            if sanitized then
+                setAppearanceCache(row.id, sanitized)
+                local updated = dbUpdate('UPDATE users SET skin = ? WHERE identifier = ?', {
+                    json.encode(sanitized), row.id
+                }) or 0
+                if updated > 0 then
+                    migrated = migrated + 1
+                end
+            end
+        end
+    end
+
+    markAppearanceMigrationComplete()
+
+    if migrated > 0 then
+        print(('bl_appearance: migrated %s legacy appearance rows into users.skin'):format(migrated))
+    end
+end
+
+dbReady(function()
+    migrateLegacyAppearanceTable()
+end)
+
+AddEventHandler('playerDropped', function()
+    local frameworkId = getFrameworkID(source)
+    if frameworkId then
+        flushAppearanceSave(frameworkId)
+        appearanceCache[frameworkId] = nil
+    end
+end)
+
+AddEventHandler('onResourceStop', function(resource)
+    if resource ~= GetCurrentResourceName() then return end
+
+    for frameworkId in pairs(pendingAppearanceSaves) do
+        flushAppearanceSave(frameworkId)
     end
 end)
 
