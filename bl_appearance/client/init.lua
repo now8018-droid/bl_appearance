@@ -714,8 +714,7 @@ local function restoreESXPlayerStateAfterModelChange(pedHandle)
     if GetResourceState('es_extended') ~= 'started' or not ESX or not ESX.PlayerLoaded then return end
 
     ESX.SetPlayerData('ped', pedHandle)
-    TriggerEvent('skinchanger:modelLoaded')
-    TriggerEvent('esx:restoreLoadout')
+    TriggerEvent('esx:onPlayerModelChanged')
 end
 
 local function setModel(pedHandle, data)
