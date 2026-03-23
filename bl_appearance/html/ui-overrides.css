@@ -1,0 +1,120 @@
+/*
+ * UI customization layer
+ * ----------------------
+ * Put visual tweaks here instead of editing the generated/minified `index.css`.
+ * This file is loaded after `index.css`, so these rules override the defaults.
+ */
+
+:root {
+  /* Core theme */
+  --ui-theme-primary: var(--primary);
+  --ui-theme-secondary: var(--secondary);
+  --ui-theme-accent: var(--accent);
+  --ui-theme-success: var(--success);
+  --ui-theme-error: var(--error);
+  --ui-theme-text: var(--text-primary);
+  --ui-theme-muted: rgba(250, 247, 255, 0.7);
+
+  /* Surfaces / controls */
+  --ui-control-height: 3vh;
+  --ui-control-padding: 0.5vh;
+  --ui-control-radius: 0.4vh;
+  --ui-control-border: rgba(60, 60, 60, 0.75);
+  --ui-control-bg: rgba(37, 37, 37, 0.8);
+  --ui-control-bg-hover: rgba(37, 37, 37, 0.92);
+  --ui-control-text: var(--ui-theme-text);
+  --ui-control-font-size: 1.6vh;
+  --ui-control-font-weight: 600;
+
+  /* Panel / spacing */
+  --ui-sidebar-width: 40vh;
+  --ui-section-gap: 1vh;
+  --ui-scrollbar-size: 0.5vh;
+
+  /* Heritage-specific controls */
+  --ui-heritage-option-gap: 0.5vh;
+  --ui-heritage-blend-width: 6vh;
+}
+
+html,
+body {
+  color: var(--ui-theme-text);
+}
+
+input[type="number"],
+input[type="text"],
+button.btn,
+.btn {
+  border-radius: var(--ui-control-radius);
+}
+
+input[type="number"],
+input[type="text"] {
+  min-height: var(--ui-control-height);
+  padding-inline: var(--ui-control-padding);
+  border-color: var(--ui-control-border);
+  background-color: var(--ui-control-bg);
+  color: var(--ui-control-text);
+  font-size: var(--ui-control-font-size);
+  font-weight: var(--ui-control-font-weight);
+}
+
+input[type="number"]:hover,
+input[type="text"]:hover {
+  background-color: var(--ui-control-bg-hover);
+}
+
+button.btn,
+.btn {
+  border-color: var(--ui-control-border);
+  background-color: var(--ui-control-bg);
+  color: var(--ui-control-text);
+}
+
+button.btn:hover,
+.btn:hover {
+  background-color: var(--ui-control-bg-hover);
+}
+
+::-webkit-scrollbar {
+  width: var(--ui-scrollbar-size);
+  height: var(--ui-scrollbar-size);
+}
+
+[class*="radial-background"] {
+  background: transparent !important;
+}
+
+.heritage-model-option {
+  width: 100%;
+  min-height: var(--ui-control-height);
+  display: flex;
+  align-items: center;
+  justify-content: flex-start;
+  gap: var(--ui-heritage-option-gap);
+  padding: var(--ui-control-padding);
+  font-weight: 600;
+}
+
+.heritage-model-search {
+  width: 100%;
+  min-height: var(--ui-control-height);
+  padding: var(--ui-control-padding);
+}
+
+.heritage-blend-value {
+  position: relative;
+  width: var(--ui-heritage-blend-width);
+  height: 100%;
+  text-align: center;
+}
+
+.heritage-slider-group {
+  display: flex;
+  width: 100%;
+  height: fit-content;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 0.35vh;
+}
