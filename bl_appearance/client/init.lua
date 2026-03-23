@@ -129,16 +129,38 @@ local function onServerCallback(eventName, cb)
     end)
 end
 
+local function decodeLocale(localeName)
+    local localePath = ('locale/%s.lua'):format(localeName)
+    local localeFileContent = LoadResourceFile(resourceName, localePath)
+    if not localeFileContent then
+        return nil, localePath
+    end
+
+    local localeChunk, loadError = load(localeFileContent, ('@@%s/%s'):format(resourceName, localePath), 't', {})
+    if not localeChunk then
+        print(('failed to load locale file %s: %s'):format(localePath, loadError))
+        return nil, localePath
+    end
+
+    local ok, localeTable = pcall(localeChunk)
+    if not ok or type(localeTable) ~= 'table' then
+        print(('failed to decode locale file %s'):format(localePath))
+        return nil, localePath
+    end
+
+    return json.encode(localeTable), localePath
+end
+
 local function requestLocale()
     local currentLan = exports.bl_appearance:config().locale or 'en'
-    local localeFileContent = LoadResourceFile(resourceName, ('locale/%s.json'):format(currentLan))
+    local localeFileContent, localePath = decodeLocale(currentLan)
     if not localeFileContent then
-        print(('%s.json not found in locale, using english for now!'):format(currentLan))
-        localeFileContent = LoadResourceFile(resourceName, 'locale/en.json')
+        print(('%s not found in locale, using english for now!'):format(localePath))
+        localeFileContent = decodeLocale('en')
     end
 
     if not localeFileContent then
-        print('locale/en.json not found in resource files, using built-in fallback locale')
+        print('locale/en.lua not found in resource files, using built-in fallback locale')
         localeFileContent = json.encode({
             MENU_TITLE = 'Menu',
             CLOSE_TITLE = 'Close',
