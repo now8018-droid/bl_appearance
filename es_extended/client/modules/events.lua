@@ -207,18 +207,20 @@ local function resyncPlayerCacheFromServer(cb)
 end
 
 local function handlePlayerModelChanged()
-    ESX.SetPlayerData("ped", PlayerPedId())
-
     local function tryResync()
         if not ESX.PlayerLoaded then
             return SetTimeout(100, tryResync)
         end
+
+        ESX.SetPlayerData("ped", PlayerPedId())
         resyncPlayerCacheFromServer(function()
+            TriggerEvent("esx:onPlayerSpawn")
+            TriggerServerEvent("esx:onPlayerSpawn")
             TriggerEvent("esx:restoreLoadout")
         end)
     end
 
-    tryResync()
+    SetTimeout(100, tryResync)
 end
 
 AddEventHandler("skinchanger:modelLoaded", handlePlayerModelChanged)
