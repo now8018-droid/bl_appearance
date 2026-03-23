@@ -160,28 +160,73 @@ local function getFrameworkID(src)
     return player and player.id or nil
 end
 
+local mergeAppearance
+local getAppearance
+local saveAppearance
+
+local function getUserSkin(frameworkId)
+    local response = dbScalar('SELECT skin FROM users WHERE identifier = ? LIMIT 1', { frameworkId })
+    return response and json.decode(response) or nil
+end
+
+local function syncESXUserSkin(frameworkId, appearance, src)
+    if not frameworkId or not appearance then return end
+
+    dbUpdate('UPDATE users SET skin = ? WHERE identifier = ?', {
+        json.encode(appearance), frameworkId
+    })
+
+    local xPlayer = src and ESX.GetPlayerFromId(tonumber(src)) or ESX.GetPlayerFromIdentifier(frameworkId)
+    if xPlayer then
+        xPlayer.skin = appearance
+    end
+end
+
+local function getPersistedAppearance(src, frameworkId)
+    local appearance = getAppearance(src, frameworkId)
+    if appearance then
+        return appearance
+    end
+
+    frameworkId = frameworkId or getFrameworkID(src)
+    if not frameworkId then return nil end
+
+    local userSkin = getUserSkin(frameworkId)
+    if type(userSkin) == 'table' then
+        userSkin.id = frameworkId
+        userSkin.tattoos = userSkin.tattoos or {}
+        return userSkin
+    end
+
+    return nil
+end
+
 local function saveSkin(src, frameworkId, skin)
     frameworkId = frameworkId or getFrameworkID(src)
-    return dbUpdate('UPDATE appearance SET skin = ? WHERE id = ?', {
-        json.encode(skin), frameworkId
-    })
+    local appearance = getPersistedAppearance(src, frameworkId) or {}
+    for key, value in pairs(skin or {}) do
+        appearance[key] = value
+    end
+    return saveAppearance(src, frameworkId, appearance, true)
 end
 
 local function saveClothes(src, frameworkId, clothes)
     frameworkId = frameworkId or getFrameworkID(src)
-    return dbUpdate('UPDATE appearance SET clothes = ? WHERE id = ?', {
-        json.encode(clothes), frameworkId
-    })
+    local appearance = getPersistedAppearance(src, frameworkId) or {}
+    for key, value in pairs(clothes or {}) do
+        appearance[key] = value
+    end
+    return saveAppearance(src, frameworkId, appearance, true)
 end
 
 local function saveTattoos(src, frameworkId, tattoos)
     frameworkId = frameworkId or getFrameworkID(src)
-    return dbUpdate('UPDATE appearance SET tattoos = ? WHERE id = ?', {
-        json.encode(tattoos), frameworkId
-    })
+    local appearance = getPersistedAppearance(src, frameworkId) or {}
+    appearance.tattoos = tattoos or {}
+    return saveAppearance(src, frameworkId, appearance, true)
 end
 
-local function saveAppearance(src, frameworkId, appearance, force)
+saveAppearance = function(src, frameworkId, appearance, force)
     if not force and src and frameworkId and getFrameworkID(src) ~= frameworkId then
         print(('You are trying to save an appearance for a different player %s %s'):format(src, frameworkId))
     end
@@ -200,10 +245,16 @@ local function saveAppearance(src, frameworkId, appearance, force)
     }
     local tattoos = appearance.tattoos or {}
 
-    return dbPrepare(
+    local saved = dbPrepare(
         'INSERT INTO appearance (id, clothes, skin, tattoos) VALUES (?, ?, ?, ?) ON DUPLICATE KEY UPDATE clothes = VALUES(clothes), skin = VALUES(skin), tattoos = VALUES(tattoos);',
         { frameworkId, json.encode(clothes), json.encode(skin), json.encode(tattoos) }
     )
+
+    if saved then
+        syncESXUserSkin(frameworkId, mergeAppearance(skin, clothes, tattoos, frameworkId), src)
+    end
+
+    return saved
 end
 
 onClientCallback('bl_appearance:server:saveSkin', saveSkin)
@@ -383,7 +434,7 @@ exports('GetPlayerTattoos', function(id)
     return getTattoos(nil, id)
 end)
 
-local function mergeAppearance(skin, clothes, tattoos, id)
+mergeAppearance = function(skin, clothes, tattoos, id)
     local appearance = {}
     skin = skin or {}
     clothes = clothes or {}
@@ -400,7 +451,7 @@ local function mergeAppearance(skin, clothes, tattoos, id)
     return appearance
 end
 
-local function getAppearance(src, frameworkId)
+getAppearance = function(src, frameworkId)
     if not frameworkId and not src then
         return nil
     end
