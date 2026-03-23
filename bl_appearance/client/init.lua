@@ -18,6 +18,28 @@ local function cloneTable(value)
     return copy
 end
 
+local function mergeTables(base, override)
+    if type(base) ~= 'table' then
+        if override == nil then return base end
+        return cloneTable(override)
+    end
+
+    local merged = cloneTable(base)
+    if type(override) ~= 'table' then
+        return merged
+    end
+
+    for key, value in pairs(override) do
+        if type(value) == 'table' and type(merged[key]) == 'table' then
+            merged[key] = mergeTables(merged[key], value)
+        else
+            merged[key] = cloneTable(value)
+        end
+    end
+
+    return merged
+end
+
 local function hasValue(list, value)
     for i = 1, #list do
         if list[i] == value then
@@ -516,6 +538,15 @@ local function getAppearance(pedHandle)
     return cloneTable(currentAppearanceState)
 end
 exports('GetPedAppearance', getAppearance)
+
+local function normalizeAppearance(pedHandle, appearance)
+    local baseline = getAppearance(pedHandle)
+    if not appearance then
+        return baseline
+    end
+
+    return mergeTables(baseline, appearance)
+end
 
 onServerCallback('bl_appearance:client:getAppearance', function()
     updatePed(PlayerPedId())
@@ -1084,11 +1115,9 @@ local function openMenu(zone, creation)
     if not creation and frameworkID then
         appearance = triggerServerCallback('bl_appearance:server:getAppearance', frameworkID)
     end
-    if not appearance then
-        appearance = getAppearance(pedHandle)
-    else
-        currentAppearanceState = cloneTable(appearance)
-    end
+
+    appearance = normalizeAppearance(pedHandle, appearance)
+    currentAppearanceState = cloneTable(appearance)
 
     startCamera()
     sendNUIEvent('appearance:data', {
