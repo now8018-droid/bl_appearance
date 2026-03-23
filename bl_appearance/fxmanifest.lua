@@ -33,6 +33,7 @@ client_scripts {
 
 files {
     'html/**',
+    'locale/*',
 }
 
 file_set 'locale' {

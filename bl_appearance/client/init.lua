@@ -108,12 +108,23 @@ local function onServerCallback(eventName, cb)
 end
 
 local function requestLocale()
-    local currentLan = exports.bl_appearance:config().locale
+    local currentLan = exports.bl_appearance:config().locale or 'en'
     local localeFileContent = LoadResourceFile(resourceName, ('locale/%s.json'):format(currentLan))
     if not localeFileContent then
         print(('%s.json not found in locale, using english for now!'):format(currentLan))
         localeFileContent = LoadResourceFile(resourceName, 'locale/en.json')
     end
+
+    if not localeFileContent then
+        print('locale/en.json not found in resource files, using built-in fallback locale')
+        localeFileContent = json.encode({
+            MENU_TITLE = 'Menu',
+            CLOSE_TITLE = 'Close',
+            SAVE_TITLE = 'Save',
+            ZONE_TITLE = 'Zone'
+        })
+    end
+
     return localeFileContent
 end
 
