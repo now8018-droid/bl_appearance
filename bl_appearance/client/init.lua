@@ -710,6 +710,14 @@ local function setHeadBlend(pedHandle, data)
 end
 exports('SetPedHeadBlend', setHeadBlend)
 
+local function restoreESXPlayerStateAfterModelChange(pedHandle)
+    if GetResourceState('es_extended') ~= 'started' or not ESX or not ESX.PlayerLoaded then return end
+
+    ESX.SetPlayerData('ped', pedHandle)
+    TriggerEvent('skinchanger:modelLoaded')
+    TriggerEvent('esx:restoreLoadout')
+end
+
 local function setModel(pedHandle, data)
     if data == nil then return pedHandle end
     local model
@@ -731,6 +739,7 @@ local function setModel(pedHandle, data)
         Wait(0)
         pedHandle = PlayerPedId()
         updatePed(pedHandle)
+        restoreESXPlayerStateAfterModelChange(pedHandle)
     end
 
     SetModelAsNoLongerNeeded(model)
