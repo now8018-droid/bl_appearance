@@ -508,9 +508,6 @@ onClientCallback('bl_appearance:server:importOutfit', importOutfit)
 exports('ImportOutfit', importOutfit)
 
 local outfitItem = config.outfitItem
-if not outfitItem then
-    print('bl_appearance: No outfit item configured, please set it in config.lua')
-end
 
 onClientCallback('bl_appearance:server:itemOutfit', function(src, data)
     if not outfitItem then

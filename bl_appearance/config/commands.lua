@@ -24,7 +24,7 @@ lib.addCommand('appearance', {
         {
             name = 'target',
             type = 'playerId',
-            help = 'Target player's server id',
+            help = "Target player's server id",
         },
         {
             name = 'type',
@@ -46,7 +46,7 @@ lib.addCommand('skin', {
         {
             name = 'target',
             type = 'playerId',
-            help = 'Target player's server id',
+            help = "Target player's server id",
             optional = true,
         }
     },
