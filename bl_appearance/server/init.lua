@@ -689,15 +689,19 @@ local function migrateLegacyAppearanceTable()
         return
     end
 
-    local ok, rows = pcall(function()
-        return dbQuery('SELECT id, skin, clothes, tattoos FROM appearance')
-    end)
+    local tableExists = dbScalar([[
+        SELECT 1
+        FROM information_schema.tables
+        WHERE table_schema = DATABASE() AND table_name = 'appearance'
+        LIMIT 1
+    ]])
 
-    if not ok then
-        print(('bl_appearance: legacy appearance table is unavailable, skipping migration (%s)'):format(rows))
+    if not tableExists then
+        markAppearanceMigrationComplete()
         return
     end
 
+    local rows = dbQuery('SELECT id, skin, clothes, tattoos FROM appearance')
     if not rows or #rows == 0 then
         markAppearanceMigrationComplete()
         return
