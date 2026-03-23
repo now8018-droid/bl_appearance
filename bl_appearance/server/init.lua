@@ -49,11 +49,6 @@ local function dbPrepare(query, params)
 end
 
 local function dbReady(cb)
-    local ready = oxmysql.ready
-    if ready then
-        return ready(oxmysql, cb)
-    end
-
     CreateThread(function()
         while GetResourceState('oxmysql') ~= 'started' do
             Wait(50)
